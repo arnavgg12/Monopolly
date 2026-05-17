@@ -2,52 +2,66 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Property Tycoon — Multiplayer</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0e1a2b" />
+  <title>Property Tycoon — Multiplayer with voice chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#0a1424" />
   <link rel="stylesheet" href="style.css" />
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
-  <!-- LOBBY -->
+  <!-- ============================== LOBBY ============================== -->
   <main id="lobby">
     <div class="lobby-card">
+      <div class="brand-mark">🏠</div>
       <h1>Property Tycoon</h1>
-      <div class="sub">Mobile-friendly Monopoly with voice chat. No accounts, no installs — share a link.</div>
+      <div class="sub">Multiplayer property-trading board game with voice (and optional video) chat. Share a link — no accounts, no installs.</div>
 
       <!-- Host section -->
       <div id="host-section">
-        <label for="host-name">Your name</label>
+        <label>Your name</label>
         <input id="host-name" type="text" placeholder="e.g. Arnav" maxlength="20" />
-        <div class="row" style="margin-top: 10px;">
-          <button id="host-btn">Create a room</button>
+
+        <label>Pick a token</label>
+        <div id="host-tokens" class="token-picker"></div>
+
+        <label>Game mode</label>
+        <div id="mode-toggle" class="mode-toggle"></div>
+
+        <div class="row" style="margin-top: 16px;">
+          <button id="host-btn" class="big">Create room</button>
         </div>
 
-        <div id="host-share" class="hidden" style="margin-top: 14px;">
-          <div class="sub" style="margin-bottom: 6px;">Room code: <span id="room-code"></span></div>
-          <label>Share this link:</label>
+        <div id="host-share" class="hidden" style="margin-top: 18px;">
+          <div class="sub" style="margin-bottom: 6px;">Room code <span id="room-code"></span></div>
+          <label>Share this link</label>
           <div class="row">
             <input id="share-url" type="text" readonly />
             <button id="copy-url-btn" class="ghost">Copy link</button>
           </div>
-          <div style="margin-top: 12px;">
-            <div class="sub">Players in lobby (<span id="peer-count">0</span>):</div>
+          <div style="margin-top: 16px;">
+            <div class="sub">Players in lobby (<span id="peer-count">0</span> / 8)</div>
             <ul id="lobby-peers"></ul>
-            <button id="start-game-btn" disabled>Start game</button>
+            <button id="start-game-btn" class="gold" disabled>Start game</button>
           </div>
         </div>
       </div>
 
       <!-- Join section -->
       <div id="join-section" class="hidden">
-        <div class="sub">Joining room <strong id="join-room-label"></strong></div>
-        <label for="join-name">Your name</label>
+        <div class="sub">Joining room <b id="join-room-label"></b></div>
+
+        <label>Your name</label>
         <input id="join-name" type="text" placeholder="e.g. Pia" maxlength="20" />
-        <div class="row" style="margin-top: 10px;">
-          <button id="join-btn">Join room</button>
+
+        <label>Pick a token</label>
+        <div id="join-tokens" class="token-picker"></div>
+
+        <div class="row" style="margin-top: 14px;">
+          <button id="join-btn" class="big">Join room</button>
         </div>
-        <div style="margin-top: 12px;">
-          <div class="sub">Players (<span id="peer-count">0</span>):</div>
+
+        <div style="margin-top: 14px;">
+          <div class="sub">Players (<span id="peer-count">0</span>)</div>
           <ul id="lobby-peers"></ul>
         </div>
       </div>
@@ -59,18 +73,20 @@
     </div>
   </main>
 
-  <!-- GAME -->
+  <!-- ============================== GAME ============================== -->
   <main id="game" class="hidden">
     <header id="topbar">
-      <div class="title">🏠 Property Tycoon</div>
+      <div class="title-wrap"><span class="logo">🏠</span> Property Tycoon</div>
       <div id="turn-indicator"></div>
       <div class="voice-controls">
         <button id="mute-btn">🎤 Mute</button>
+        <button id="video-btn" class="off">📷 Video on</button>
+        <button id="sound-btn">🔊 Sound</button>
       </div>
     </header>
 
     <section id="board-wrap">
-      <div id="board"></div>
+      <div id="board" class="tilted"></div>
     </section>
 
     <aside id="sidebar">
@@ -79,15 +95,11 @@
         <div id="players"></div>
       </div>
       <div class="panel">
-        <h3>Your turn</h3>
-        <div id="action-panel"></div>
-      </div>
-      <div class="panel">
         <h3>Your properties</h3>
         <div id="my-properties"></div>
       </div>
-      <div class="panel" id="trade-panel-wrap">
-        <h3>Trade</h3>
+      <div class="panel">
+        <h3>Propose a trade</h3>
         <div id="trade-panel"></div>
       </div>
       <div class="panel">
@@ -95,6 +107,9 @@
         <div id="log"></div>
       </div>
     </aside>
+
+    <!-- Bottom-sheet action dock on mobile; appears in sidebar on desktop via CSS -->
+    <div id="action-dock"></div>
   </main>
 
   <script type="module" src="js/main.js"></script>

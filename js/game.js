@@ -14,20 +14,29 @@ function shuffle(arr) {
   return a;
 }
 
-export function createInitialState(playerList) {
-  // playerList: [{ id, name }]
-  const players = playerList.map((p, idx) => ({
-    id: p.id,
-    name: p.name,
-    token: TOKENS[idx % TOKENS.length],
-    cash: STARTING_CASH,
-    pos: 0,
-    inJail: false,
-    jailTurns: 0,
-    jailCards: 0,
-    bankrupt: false,
-    order: idx,
-  }));
+export function createInitialState(playerList, opts = {}) {
+  // playerList: [{ id, name, token? }]
+  const startingCash = opts.startingCash ?? STARTING_CASH;
+  const usedTokens = new Set();
+  const players = playerList.map((p, idx) => {
+    let token = p.token;
+    if (!token || usedTokens.has(token)) {
+      token = TOKENS.find(t => !usedTokens.has(t)) || TOKENS[idx % TOKENS.length];
+    }
+    usedTokens.add(token);
+    return {
+      id: p.id,
+      name: p.name,
+      token,
+      cash: startingCash,
+      pos: 0,
+      inJail: false,
+      jailTurns: 0,
+      jailCards: 0,
+      bankrupt: false,
+      order: idx,
+    };
+  });
 
   // properties keyed by board index
   const properties = {};
@@ -244,16 +253,131 @@ function chargeOrBankrupt(state, p, amount, creditor) {
     if (creditor) creditor.cash += amount;
     return;
   }
-  // Insufficient cash — for v1 we auto-bankrupt; UI should prompt mortgage/sell first.
+  // Insufficient cash — block on a pending payment so player can raise funds.
   if (netWorth(state, p.id) < amount) {
     log(state, `${p.name} cannot pay $${amount} and is bankrupt.`);
     bankruptPlayer(state, p, creditor);
-  } else {
-    // Force what's possible; remainder still owed → bankrupt to creditor anyway in v1.
-    if (creditor) creditor.cash += p.cash;
-    p.cash = 0;
-    log(state, `${p.name} has insufficient cash. Mortgage or sell before continuing.`);
+    return;
   }
+  state.pendingPayment = { playerId: p.id, amount, creditorId: creditor ? creditor.id : null };
+  log(state, `${p.name} owes $${amount} but only has $${p.cash}. Raise funds or declare bankruptcy.`);
+}
+
+// Auto-math: figure out a plan that raises `needed` cash via mortgages + house sales.
+// Returns { ok, plan: [{kind, spaceIndex, gain}], totalGain }
+export function planRaiseCash(state, playerId, needed) {
+  const p = playerById(state, playerId);
+  if (!p) return { ok: false, plan: [], totalGain: 0 };
+  let shortfall = needed - p.cash;
+  if (shortfall <= 0) return { ok: true, plan: [], totalGain: 0 };
+
+  // Shallow per-property simulation so we don't touch real state.
+  const sim = {};
+  for (const k in state.properties) sim[k] = { ...state.properties[k] };
+  const plan = [];
+  let gained = 0;
+
+  const findMortgageable = () => BOARD
+    .filter(sp => sim[sp.i] && sim[sp.i].owner === playerId && !sim[sp.i].mortgaged)
+    .filter(sp => !(sp.type === 'prop' && (sim[sp.i].houses > 0 || sim[sp.i].hotel)))
+    .sort((a, b) => a.mortgage - b.mortgage);
+
+  // Step 1: mortgage unbuilt properties from cheapest up.
+  for (const sp of findMortgageable()) {
+    if (shortfall <= 0) break;
+    sim[sp.i].mortgaged = true;
+    plan.push({ kind: 'mortgage', spaceIndex: sp.i, gain: sp.mortgage });
+    shortfall -= sp.mortgage;
+    gained   += sp.mortgage;
+  }
+
+  // Step 2: sell houses/hotels respecting even-sell, cheapest house-cost group first.
+  while (shortfall > 0) {
+    const candidates = BOARD
+      .filter(sp => sp.type === 'prop' && sim[sp.i]?.owner === playerId
+                && (sim[sp.i].houses > 0 || sim[sp.i].hotel))
+      .filter(sp => {
+        const prop = sim[sp.i];
+        const myCount = prop.hotel ? 5 : prop.houses;
+        const groupSpaces = BOARD.filter(s => s.type === 'prop' && s.group === sp.group);
+        return groupSpaces.every(g => {
+          const gp = sim[g.i];
+          const gCount = gp.hotel ? 5 : gp.houses;
+          return myCount >= gCount;
+        });
+      })
+      .sort((a, b) => COLOR_GROUPS[a.group].houseCost - COLOR_GROUPS[b.group].houseCost);
+    if (!candidates.length) break;
+    const sp = candidates[0];
+    const refund = Math.floor(COLOR_GROUPS[sp.group].houseCost / 2);
+    if (sim[sp.i].hotel) { sim[sp.i].hotel = false; sim[sp.i].houses = 4; }
+    else sim[sp.i].houses -= 1;
+    plan.push({ kind: 'sellHouse', spaceIndex: sp.i, gain: refund });
+    shortfall -= refund;
+    gained   += refund;
+  }
+
+  // Step 3: mortgage anything that's now houseless.
+  for (const sp of findMortgageable()) {
+    if (shortfall <= 0) break;
+    sim[sp.i].mortgaged = true;
+    plan.push({ kind: 'mortgage', spaceIndex: sp.i, gain: sp.mortgage });
+    shortfall -= sp.mortgage;
+    gained   += sp.mortgage;
+  }
+
+  return { ok: shortfall <= 0, plan, totalGain: gained };
+}
+
+export function executeRaisePlan(state, playerId, needed) {
+  const { ok, plan } = planRaiseCash(state, playerId, needed);
+  for (const a of plan) {
+    if (a.kind === 'mortgage')  mortgage(state, playerId, a.spaceIndex);
+    if (a.kind === 'sellHouse') sellHouse(state, playerId, a.spaceIndex);
+  }
+  return ok;
+}
+
+// Try to settle a pendingPayment if the player now has enough cash. Called after
+// any mortgage/sell/etc. so the UI never gets stuck.
+function tryCompletePayment(state) {
+  const pp = state.pendingPayment;
+  if (!pp) return;
+  const p = playerById(state, pp.playerId);
+  if (!p) { state.pendingPayment = null; return; }
+  if (p.cash >= pp.amount) {
+    p.cash -= pp.amount;
+    if (pp.creditorId) {
+      const c = playerById(state, pp.creditorId);
+      if (c) c.cash += pp.amount;
+    }
+    log(state, `${p.name} paid $${pp.amount}.`);
+    state.pendingPayment = null;
+  }
+}
+
+export function settlePending(state, playerId) {
+  // Player-initiated: try to auto-raise, then settle.
+  const pp = state.pendingPayment;
+  if (!pp || pp.playerId !== playerId) return false;
+  executeRaisePlan(state, playerId, pp.amount);
+  tryCompletePayment(state);
+  return true;
+}
+
+export function declareBankruptcy(state, playerId) {
+  const pp = state.pendingPayment;
+  if (!pp || pp.playerId !== playerId) return false;
+  const p = playerById(state, playerId);
+  const creditor = pp.creditorId ? playerById(state, pp.creditorId) : null;
+  log(state, `${p.name} declares bankruptcy.`);
+  bankruptPlayer(state, p, creditor);
+  state.pendingPayment = null;
+  // Advance turn if the bankrupt player was current.
+  if (state.phase !== 'gameover' && currentPlayer(state).id === playerId) {
+    state.phase = 'end';
+  }
+  return true;
 }
 
 function bankruptPlayer(state, p, creditor) {
@@ -503,6 +627,7 @@ export function sellHouse(state, playerId, spaceIndex) {
   p.cash += refund;
   if (prop.hotel) { prop.hotel = false; prop.houses = 4; log(state, `${p.name} sold the hotel on ${sp.name} for $${refund}.`); }
   else { prop.houses -= 1; log(state, `${p.name} sold a house on ${sp.name} for $${refund}.`); }
+  tryCompletePayment(state);
   return true;
 }
 
@@ -515,6 +640,7 @@ export function mortgage(state, playerId, spaceIndex) {
   const p = playerById(state, playerId);
   p.cash += sp.mortgage;
   log(state, `${p.name} mortgaged ${sp.name} for $${sp.mortgage}.`);
+  tryCompletePayment(state);
   return true;
 }
 
